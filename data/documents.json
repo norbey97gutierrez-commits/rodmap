@@ -1,0 +1,30 @@
+[
+  {
+    "id": "doc_001",
+    "title": "Configuración de Redes Virtuales (VNet)",
+    "content": "Una Azure Virtual Network (VNet) es el bloque de creación fundamental de una red privada en Azure. Permite que muchos tipos de recursos de Azure, como Azure Virtual Machines (VM), se comuniquen de forma segura entre sí, con Internet y con las redes locales. Las VNets proporcionan aislamiento, segmentación y filtrado de tráfico.",
+    "category": "Networking",
+    "source": "Manual_Redes_v1.pdf"
+  },
+  {
+    "id": "doc_002",
+    "title": "Seguridad en Azure SQL Database",
+    "content": "La seguridad de Azure SQL Database se basa en capas. Primero, el firewall a nivel de servidor impide todo acceso hasta que se otorgue permiso. Segundo, la autenticación de Azure AD permite la gestión centralizada de identidades. Tercero, el cifrado de datos en reposo (TDE) protege contra amenazas de actividad malintencionada fuera de línea.",
+    "category": "Databases",
+    "source": "Guia_Seguridad_SQL.pdf"
+  },
+  {
+    "id": "doc_003",
+    "title": "Escalado de App Services",
+    "content": "Azure App Service permite el escalado vertical (cambiar a un plan con más CPU/RAM) y horizontal (aumentar el número de instancias). El autoescalado se puede configurar mediante reglas basadas en métricas como el porcentaje de CPU o el uso de memoria para optimizar costos y rendimiento.",
+    "category": "Compute",
+    "source": "Ops_AppService_2024.docx"
+  },
+  {
+    "id": "doc_004",
+    "title": "Azure AI Search y Búsqueda Vectorial",
+    "content": "Azure AI Search admite la búsqueda vectorial mediante el almacenamiento de representaciones matemáticas de texto. Utiliza algoritmos como HNSW para encontrar documentos similares basándose en la proximidad en un espacio vectorial de alta dimensión, lo que permite búsquedas semánticas más precisas que la búsqueda de palabras clave tradicional.",
+    "category": "AI",
+    "source": "Documentacion_AI_Search.pdf"
+  }
+]

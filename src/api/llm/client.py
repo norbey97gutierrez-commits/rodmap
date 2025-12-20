@@ -1,19 +1,13 @@
 from langchain_openai import AzureChatOpenAI
 
-from ..core.config import settings
+from src.api.core.config import settings
 
-
-def get_llm():
-    llm = AzureChatOpenAI(
-        azure_endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
-        api_version=settings.azure_openai_api_version,
-        azure_deployment=settings.azure_openai_deployment_name,
-    )
-    return llm
-
-
-async def get_chat_response(text: str) -> str:
-    llm = get_llm()
-    response = llm.invoke(text)
-    return response.content
+# Inicialización del modelo de lenguaje (GPT-4)
+llm = AzureChatOpenAI(
+    azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+    api_key=settings.AZURE_OPENAI_API_KEY,
+    api_version=settings.AZURE_OPENAI_API_VERSION,
+    # Sincronizado con el nuevo nombre en settings para el modelo de chat
+    azure_deployment=settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
+    temperature=0.0,  # 0.0 para máxima precisión técnica y evitar alucinaciones
+)
