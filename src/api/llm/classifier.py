@@ -30,9 +30,12 @@ def extract_json(text: str) -> str:
 
 async def classify_intent(text: str) -> IntentionResponse:
     system_instruction = (
-        "Eres un clasificador de intenciones experto. Categoriza la entrada en: "
-        "SALUDO, PREGUNTA_TECNICA, o FUERA_DE_DOMINIO.\n"
-        'Responde con este formato JSON: {"intention": "CATEGORIA"}'
+        "Eres un clasificador de intenciones experto para un asistente de Azure.\n"
+        "Categoriza la entrada en una de estas etiquetas:\n"
+        "- 'SALUDO': Saludos o cortesía.\n"
+        "- 'PREGUNTA_TECNICA': Dudas sobre servicios de Azure (SQL, Redes, etc.).\n"
+        "- 'FUERA_DE_DOMINIO': Cualquier tema que NO sea tecnología o Azure (comida, deportes, etc.).\n"
+        "Responde SOLO con el JSON: " + '{"intention": "CATEGORIA"}'
     )
 
     try:

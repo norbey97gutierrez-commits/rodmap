@@ -20,7 +20,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     sources: Optional[List[str]] = []
-    thread_id: str  # Devolvemos el ID usado para que el frontend lo guarde
+    thread_id: str
 
 
 @router.get("/health")
@@ -45,6 +45,7 @@ async def chat(request: ChatRequest):
             "response": result["response"],
             "sources": result.get("sources", []),
             "thread_id": active_thread_id,  # Importante para que el cliente lo use en la siguiente pregunta
+            "history": result["history"],
         }
 
     except Exception as e:

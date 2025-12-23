@@ -1,95 +1,136 @@
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 from langchain_openai import AzureOpenAIEmbeddings
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
-from langgraph.prebuilt import (
-    ToolNode,  # Nodo pre-construido para ejecutar herramientas
-)
 
 from src.api.core.config import settings
 from src.api.core.state import GraphState
+from src.api.llm.classifier import classify_intent
 from src.api.llm.client import llm
 from src.api.search.service import AzureAISearchService
 
-# 1. Configuración de Servicios y Herramientas
+# 1. Configuración de Herramientas
 embeddings_model = AzureOpenAIEmbeddings(
     azure_deployment=settings.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
     azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
     api_key=settings.AZURE_OPENAI_API_KEY,
 )
 
-search_service = AzureAISearchService(
-    endpoint=settings.AZURE_SEARCH_ENDPOINT, api_key=settings.AZURE_SEARCH_API_KEY
+search_service = AzureAISearchService()
+
+search_tool = StructuredTool.from_function(
+    coroutine=search_service.search_technical_docs,
+    name="search_technical_docs",
+    description="Busca información técnica sobre Azure (SQL, App Services, Redes, etc.)",
 )
 
-# Definimos las herramientas que el agente puede usar
-tools = [search_service.search_technical_docs]
-# Vinculamos las herramientas al modelo (Tool Binding)
-llm_with_tools = llm.bind_tools(tools)
+tools_map = {"search_technical_docs": search_tool}
+llm_with_tools = llm.bind_tools([search_tool])
 
-# --- NODOS DEL GRAFO ---
+# --- NODOS ---
 
 
 async def agent_node(state: GraphState):
-    """
-    Nodo del Agente: Decide si usar una herramienta o responder directamente.
-    """
-    existing_history = state.get("history") or []
+    # Paso 1: Clasificar la intención si no existe en el estado
+    # Esto actúa como el "Guardián" inicial
+    intent_response = await classify_intent(state["input"])
+    intent = intent_response.intention
 
-    system_msg = SystemMessage(
-        content=(
-            "Eres un asistente técnico experto en Azure. "
-            "Si necesitas datos específicos sobre servicios, usa la herramienta de búsqueda."
-        )
-    )
+    # Si es fuera de dominio, no llamamos al LLM con herramientas,
+    # simplemente pasamos la intención al siguiente paso
+    if intent == "FUERA_DE_DOMINIO":
+        return {"intention": "FUERA_DE_DOMINIO"}
 
-    messages = [system_msg] + existing_history + [HumanMessage(content=state["input"])]
+    messages = state.get("history", [])
+    if not messages:
+        messages = [
+            SystemMessage(
+                content=(
+                    "Eres un asistente experto en Azure. SIEMPRE utiliza la herramienta "
+                    "'search_technical_docs' para obtener datos precisos. "
+                    "Cuando respondas, menciona explícitamente la fuente o documento consultado."
+                )
+            ),
+            HumanMessage(content=state["input"]),
+        ]
 
-    # El LLM ahora puede devolver una respuesta de texto o una solicitud de herramienta
     response = await llm_with_tools.ainvoke(messages)
 
-    return {
-        "history": [HumanMessage(content=state["input"]), response],
-        "response": response.content,
-    }
+    display_response = (
+        response.content
+        if not response.tool_calls
+        else "Consultando base de conocimientos técnica..."
+    )
+
+    return {"history": [response], "response": display_response, "intention": intent}
+
+
+async def out_of_domain_node(state: GraphState):
+    """Nodo que responde cuando la pregunta no es sobre Azure."""
+    response = (
+        "Lo siento, soy un asistente especializado exclusivamente en Azure. "
+        "No tengo información sobre otros temas (como cocina o deportes). ¿Tienes alguna duda técnica sobre Azure?"
+    )
+    return {"response": response}
+
+
+async def manual_tool_node(state: GraphState):
+    last_message = state["history"][-1]
+    tool_outputs = []
+    all_sources = state.get("sources", [])
+
+    if hasattr(last_message, "tool_calls"):
+        for tool_call in last_message.tool_calls:
+            if tool_call["name"] == "search_technical_docs":
+                observation = await tools_map["search_technical_docs"].ainvoke(
+                    tool_call["args"]
+                )
+
+                content = observation.get("content", "")
+                sources = observation.get("sources", [])
+
+                tool_outputs.append(
+                    ToolMessage(content=content, tool_call_id=tool_call["id"])
+                )
+                all_sources.extend(sources)
+
+    return {"history": tool_outputs, "sources": list(set(all_sources))}
 
 
 def should_continue(state: GraphState):
-    """
-    Lógica de control: Revisa si el último mensaje del historial es una llamada a herramienta.
-    """
-    messages = state.get("history", [])
-    last_message = messages[-1] if messages else None
+    # Lógica del Guardián: Si la intención es fuera de dominio, desviamos el flujo
+    if state.get("intention") == "FUERA_DE_DOMINIO":
+        return "out_of_domain"
 
-    if last_message and hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "tools"  # Ir al nodo de ejecución de herramientas
-    return END  # Finalizar si no hay herramientas que ejecutar
+    last_message = state["history"][-1]
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return "tools"
+    return "end"
 
 
 # --- CONSTRUCCIÓN DEL WORKFLOW ---
 workflow = StateGraph(GraphState)
 
-# Añadimos el nodo del agente
 workflow.add_node("agent", agent_node)
-
-# Añadimos el ToolNode (ejecuta automáticamente las herramientas vinculadas)
-tool_node = ToolNode(tools)
-workflow.add_node("tools", tool_node)
+workflow.add_node("tools", manual_tool_node)
+workflow.add_node("out_of_domain", out_of_domain_node)
 
 workflow.set_entry_point("agent")
 
-# Añadimos el borde condicional para el ciclo de razonamiento (Agentic Loop)
+# El flujo ahora tiene 3 destinos posibles desde el agente
 workflow.add_conditional_edges(
     "agent",
     should_continue,
     {
         "tools": "tools",
+        "out_of_domain": "out_of_domain",
         "end": END,
     },
 )
 
-# El resultado de la herramienta siempre vuelve al agente para que lo analice
 workflow.add_edge("tools", "agent")
+workflow.add_edge("out_of_domain", END)  # Si entra aquí, el chat termina con el rechazo
 
 memory = MemorySaver()
 app = workflow.compile(checkpointer=memory)
