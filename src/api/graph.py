@@ -19,6 +19,8 @@ embeddings_model = AzureOpenAIEmbeddings(
 
 search_service = AzureAISearchService()
 
+# Definimos la herramienta.
+# NOTA: Si el error persiste, asegúrate de que en service.py el método esté bien escrito.
 search_tool = StructuredTool.from_function(
     coroutine=search_service.search_technical_docs,
     name="search_technical_docs",
@@ -32,50 +34,57 @@ llm_with_tools = llm.bind_tools([search_tool])
 
 
 async def agent_node(state: GraphState):
-    # Paso 1: Clasificar la intención si no existe en el estado
-    # Esto actúa como el "Guardián" inicial
+    """Nodo principal que clasifica y decide el siguiente paso."""
+    # Solo clasificamos si no lo hemos hecho en este paso del thread
     intent_response = await classify_intent(state["input"])
     intent = intent_response.intention
 
-    # Si es fuera de dominio, no llamamos al LLM con herramientas,
-    # simplemente pasamos la intención al siguiente paso
     if intent == "FUERA_DE_DOMINIO":
         return {"intention": "FUERA_DE_DOMINIO"}
 
     messages = state.get("history", [])
+
+    # Si es el inicio de la conversación, agregamos el System Message
     if not messages:
         messages = [
             SystemMessage(
                 content=(
                     "Eres un asistente experto en Azure. SIEMPRE utiliza la herramienta "
                     "'search_technical_docs' para obtener datos precisos. "
-                    "Cuando respondas, menciona explícitamente la fuente o documento consultado."
+                    "Responde de forma profesional y cita tus fuentes."
                 )
             ),
             HumanMessage(content=state["input"]),
         ]
+    else:
+        # Si ya hay historia, solo agregamos el nuevo input si el último no fue del humano
+        if not isinstance(messages[-1], HumanMessage):
+            messages.append(HumanMessage(content=state["input"]))
 
     response = await llm_with_tools.ainvoke(messages)
 
+    # Si hay tool_calls, informamos que estamos buscando
     display_response = (
         response.content
         if not response.tool_calls
-        else "Consultando base de conocimientos técnica..."
+        else "Buscando en los manuales de Azure..."
     )
 
     return {"history": [response], "response": display_response, "intention": intent}
 
 
 async def out_of_domain_node(state: GraphState):
-    """Nodo que responde cuando la pregunta no es sobre Azure."""
+    """Nodo de seguridad: Rechazo amigable."""
     response = (
-        "Lo siento, soy un asistente especializado exclusivamente en Azure. "
-        "No tengo información sobre otros temas (como cocina o deportes). ¿Tienes alguna duda técnica sobre Azure?"
+        "Lo siento, soy un asistente especializado en Azure. "
+        "No puedo ayudarte con temas fuera de la plataforma técnica. "
+        "¿Tienes alguna duda sobre VNets, SQL o App Services?"
     )
     return {"response": response}
 
 
 async def manual_tool_node(state: GraphState):
+    """Ejecuta las herramientas y captura fuentes/scores."""
     last_message = state["history"][-1]
     tool_outputs = []
     all_sources = state.get("sources", [])
@@ -83,6 +92,7 @@ async def manual_tool_node(state: GraphState):
     if hasattr(last_message, "tool_calls"):
         for tool_call in last_message.tool_calls:
             if tool_call["name"] == "search_technical_docs":
+                # La herramienta ya trae el Re-Ranking (Threshold) aplicado desde el service
                 observation = await tools_map["search_technical_docs"].ainvoke(
                     tool_call["args"]
                 )
@@ -99,7 +109,7 @@ async def manual_tool_node(state: GraphState):
 
 
 def should_continue(state: GraphState):
-    # Lógica del Guardián: Si la intención es fuera de dominio, desviamos el flujo
+    """Router lógico del grafo."""
     if state.get("intention") == "FUERA_DE_DOMINIO":
         return "out_of_domain"
 
@@ -118,7 +128,6 @@ workflow.add_node("out_of_domain", out_of_domain_node)
 
 workflow.set_entry_point("agent")
 
-# El flujo ahora tiene 3 destinos posibles desde el agente
 workflow.add_conditional_edges(
     "agent",
     should_continue,
@@ -130,7 +139,9 @@ workflow.add_conditional_edges(
 )
 
 workflow.add_edge("tools", "agent")
-workflow.add_edge("out_of_domain", END)  # Si entra aquí, el chat termina con el rechazo
+workflow.add_edge("out_of_domain", END)
 
+# MEJORA: Persistencia con MemorySaver
+# Esto permite que el thread_id realmente mantenga la memoria
 memory = MemorySaver()
 app = workflow.compile(checkpointer=memory)

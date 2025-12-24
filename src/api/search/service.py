@@ -37,29 +37,33 @@ class AzureAISearchService:
             endpoint=self.endpoint, credential=self.credential
         )
 
+    # src/api/search/service.py
+
     async def search_technical_docs(self, query: str) -> Dict[str, Any]:
-        """Busca información técnica y devuelve contenido + fuentes."""
         from src.api.graph import embeddings_model
 
         try:
-            # 1. Generar embedding
             query_vector = await embeddings_model.aembed_query(query)
-
-            # 2. Llamada al método interno self.search
             docs = await self.search(
                 index_name=settings.AZURE_SEARCH_INDEX_NAME,
                 query=query,
                 query_vector=query_vector,
-                top_k=3,
+                top_k=5,  # Pedimos 5 para tener más de donde elegir
             )
 
-            if not docs:
-                return {"content": "No se encontró información.", "sources": []}
+            # --- MEJORA: RE-RANKING / THRESHOLD ---
+            UMBRAL_RELEVANCIA = 0.03  # Solo aceptamos documentos con score > 0.03
+            docs_validos = [d for d in docs if d.get("score", 0) >= UMBRAL_RELEVANCIA]
 
-            # 3. Formatear respuesta
+            if not docs_validos:
+                return {
+                    "content": "No encontré información lo suficientemente precisa en los manuales.",
+                    "sources": [],
+                }
+
             context_parts = []
             sources = []
-            for d in docs:
+            for d in docs_validos:
                 context_parts.append(
                     f"DOCUMENTO: {d['title']}\nCONTENIDO: {d['content']}"
                 )
