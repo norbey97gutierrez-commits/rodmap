@@ -1,6 +1,6 @@
 import logging
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langchain_openai import AzureOpenAIEmbeddings
 from langgraph.checkpoint.memory import MemorySaver
@@ -9,18 +9,12 @@ from langgraph.graph import END, START, StateGraph
 from src.api.core.config import settings
 from src.api.core.state import GraphState
 from src.api.llm.classifier import classify_intent
-
-# Asumimos que llm ya viene configurado con streaming=True desde client.py
 from src.api.llm.client import llm
 from src.api.search.service import AzureAISearchService
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# 1. CONFIGURACIÓN DE COMPONENTES
-# ============================================================================
-
-# Embeddings optimizados para Azure AI Search
+# --- Componentes ---
 embeddings_model = AzureOpenAIEmbeddings(
     azure_deployment=settings.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
     azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT),
@@ -29,93 +23,84 @@ embeddings_model = AzureOpenAIEmbeddings(
 )
 
 search_service = AzureAISearchService()
-
-# Herramienta de búsqueda técnica
 search_tool = StructuredTool.from_function(
     coroutine=search_service.search_technical_docs,
     name="search_technical_docs",
-    description="Busca información técnica oficial sobre servicios de Microsoft Azure.",
+    description="BUSCAR SIEMPRE AQUÍ. Proporciona documentos técnicos sobre Azure.",
 )
 
 tools_map = {search_tool.name: search_tool}
 llm_with_tools = llm.bind_tools([search_tool])
 
-# ============================================================================
-# 2. NODOS DEL GRAFO
-# ============================================================================
+# --- Nodos ---
 
 
 async def agent_node(state: GraphState) -> dict:
-    """
-    Nodo Agente: Decide si responder o usar herramientas.
-    """
-    # 1. Clasificación de intención (Solo si no ha sido clasificada en este turno)
+    """Nodo Agente: Fuerza el uso de herramientas y garantiza la aparición de fuentes."""
+
     intent = state.get("intention")
     if not intent:
         intent_response = await classify_intent(state["input"])
         intent = intent_response.intention
 
     if intent == "FUERA_DE_DOMINIO":
-        return {"intention": "FUERA_DE_DOMINIO"}
+        return {"intention": "FUERA_DE_DOMINIO", "response": "Tema fuera de Azure."}
 
-    # 2. Preparación de mensajes
-    # LangGraph con MemorySaver inyecta el historial automáticamente en 'history'
     messages = state.get("history", [])
 
-    # Si es el primer mensaje, inyectamos el SystemMessage
     if not messages:
         messages = [
             SystemMessage(
                 content=(
-                    "Eres un experto en Azure. Pasos:\n"
-                    "1. Usa siempre 'search_technical_docs' para datos técnicos.\n"
-                    "2. Cita fuentes explícitamente.\n"
-                    "3. Si no sabes, admítelo."
+                    "Eres un experto en Azure. OBLIGATORIO:\n"
+                    "1. Usa 'search_technical_docs' para cualquier duda técnica.\n"
+                    "2. Responde basándote SOLO en los datos recibidos de la herramienta.\n"
+                    "3. Al final de tu respuesta, DEBES escribir: '### 📚 Fuentes consultadas:' seguido de los nombres de los archivos."
                 )
             )
         ]
+        messages.append(HumanMessage(content=state["input"]))
 
-    # Añadimos la consulta actual si no está ya en el historial
-    # Nota: El checkpointer maneja la persistencia, nosotros solo preparamos el envío al LLM
-    current_input = HumanMessage(content=state["input"])
-    full_context = messages + [current_input]
+    # Invocación al LLM
+    response = await llm_with_tools.ainvoke(messages)
 
-    # 3. Invocación al LLM
-    # Importante: El streaming ocurre aquí internamente si llm tiene streaming=True
-    response = await llm_with_tools.ainvoke(full_context)
+    # --- LÓGICA DE GARANTÍA DE FUENTES ---
+    final_content = response.content
+    sources = state.get("sources", [])
 
-    # Retornamos el input para mantenerlo en el estado si es necesario,
-    # y el nuevo mensaje para que el checkpointer lo guarde.
-    return {
-        "history": [current_input, response],
-        "response": response.content,
-        "intention": intent,
-    }
+    # Si el modelo ya terminó de responder (no hay tool_calls) pero no puso las fuentes:
+    if (
+        not response.tool_calls
+        and sources
+        and "Fuentes consultadas" not in final_content
+    ):
+        sources_list = "\n".join([f"- {s}" for s in set(sources)])
+        final_content += f"\n\n### 📚 Fuentes consultadas:\n{sources_list}"
+
+    return {"history": [response], "response": final_content, "intention": intent}
 
 
 async def manual_tool_node(state: GraphState) -> dict:
-    """
-    Ejecutor de herramientas manual para mayor control sobre las fuentes.
-    """
+    """Ejecutor de herramientas: Almacena los nombres de archivos en el estado."""
     last_message = state["history"][-1]
     tool_outputs = []
     new_sources = []
 
-    for tool_call in last_message.tool_calls:
-        tool_name = tool_call["name"]
-        if tool_name in tools_map:
-            # Ejecución asíncrona de Azure AI Search
-            observation = await tools_map[tool_name].ainvoke(tool_call["args"])
-
-            content = observation.get("content", "")
-            sources = observation.get("sources", [])
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        for tool_call in last_message.tool_calls:
+            logger.info(f"🛠️ Consultando Azure AI Search para: {tool_call['args']}")
+            observation = await tools_map[tool_call["name"]].ainvoke(tool_call["args"])
 
             tool_outputs.append(
                 ToolMessage(
-                    content=content, tool_call_id=tool_call["id"], name=tool_name
+                    content=observation.get("content", ""),
+                    tool_call_id=tool_call["id"],
+                    name=tool_call["name"],
                 )
             )
-            new_sources.extend(sources)
+            # Extraemos los nombres de los archivos (sources)
+            if observation.get("sources"):
+                new_sources.extend(observation["sources"])
 
     return {
         "history": tool_outputs,
@@ -124,48 +109,41 @@ async def manual_tool_node(state: GraphState) -> dict:
 
 
 async def out_of_domain_node(state: GraphState) -> dict:
-    """Manejo de preguntas no relacionadas con Azure."""
-    response = "Soy un asistente especializado en Azure. ¿En qué servicio de la nube puedo ayudarte?"
-    return {"response": response}
+    return {"response": "Solo puedo ayudarte con temas técnicos de Microsoft Azure."}
 
 
-# ============================================================================
-# 3. LÓGICA DE CONTROL (EDGES)
-# ============================================================================
+# --- Control de flujo ---
 
 
 def should_continue(state: GraphState):
     if state.get("intention") == "FUERA_DE_DOMINIO":
         return "out_of_domain"
 
-    last_message = state["history"][-1]
-    if last_message.tool_calls:
+    messages = state.get("history", [])
+    if not messages:
+        return END
+
+    last_message = messages[-1]
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tools"
 
     return END
 
 
-# ============================================================================
-# 4. CONSTRUCCIÓN Y COMPILACIÓN
-# ============================================================================
+# --- Construcción del Grafo ---
 
 workflow = StateGraph(GraphState)
-
 workflow.add_node("agent", agent_node)
 workflow.add_node("tools", manual_tool_node)
 workflow.add_node("out_of_domain", out_of_domain_node)
 
 workflow.add_edge(START, "agent")
-
 workflow.add_conditional_edges(
     "agent",
     should_continue,
     {"tools": "tools", "out_of_domain": "out_of_domain", END: END},
 )
-
 workflow.add_edge("tools", "agent")
 workflow.add_edge("out_of_domain", END)
 
-# Checkpointer para memoria persistente (en memoria para este ejemplo)
-memory = MemorySaver()
-app = workflow.compile(checkpointer=memory)
+app = workflow.compile(checkpointer=MemorySaver())

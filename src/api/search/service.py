@@ -5,7 +5,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.aio import SearchIndexClient
 
-# 1. Modelos para ESTRUCTURA del índice (Creación)
+# 1. Modelos para ESTRUCTURA del índice
 from azure.search.documents.indexes.models import (
     HnswAlgorithmConfiguration,
     HnswParameters,
@@ -13,18 +13,14 @@ from azure.search.documents.indexes.models import (
     SearchField,
     SearchFieldDataType,
     SearchIndex,
-    SemanticConfiguration,
-    SemanticField,
-    SemanticPrioritizedFields,
-    SemanticSearch,
     SimpleField,
     VectorSearch,
     VectorSearchProfile,
+    # Eliminamos SemanticSearch y derivados para simplificar
 )
 
-# 2. Modelos para OPERACIONES de búsqueda (Ejecución)
+# 2. Modelos para OPERACIONES de búsqueda
 from azure.search.documents.models import (
-    QueryType,  # <-- QueryType se importa de aquí, no de indexes
     VectorizedQuery,
 )
 
@@ -43,25 +39,28 @@ class AzureAISearchService:
             endpoint=self.endpoint, credential=self.credential
         )
 
-    # --- MÉTODO PARA BÚSQUEDA (RAG) ---
+    # --- MÉTODO PARA BÚSQUEDA (RAG) ACTUALIZADO ---
     async def search_technical_docs(self, query: str) -> Dict[str, Any]:
-        """Realiza búsqueda híbrida y semántica en el índice."""
+        """Realiza búsqueda híbrida (Vectorial + Texto) sin dependencia semántica."""
         from src.api.graph import embeddings_model
 
         try:
+            # Generamos el vector de la consulta del usuario
             query_vector = await embeddings_model.aembed_query(query)
+
             async with SearchClient(
                 self.endpoint, self.index_name, self.credential
             ) as client:
+                # Definimos la consulta vectorial
                 vector_query = VectorizedQuery(
                     vector=query_vector, k_nearest_neighbors=5, fields="content_vector"
                 )
 
+                # Ejecutamos búsqueda Híbrida (Texto + Vectores)
+                # Eliminamos query_type=SEMANTIC y semantic_configuration_name
                 results = await client.search(
                     search_text=query,
                     vector_queries=[vector_query],
-                    query_type=QueryType.SEMANTIC,
-                    semantic_configuration_name="default-semantic-config",
                     top=5,
                     select=["title", "content", "source"],
                 )
@@ -80,12 +79,12 @@ class AzureAISearchService:
                     "sources": list(dict.fromkeys(sources)),
                 }
         except Exception as e:
-            logger.error(f"Error en búsqueda: {e}")
+            logger.error(f"Error en búsqueda vectorial: {e}")
             return {"content": "", "sources": []}
 
     # --- MÉTODO PARA INGESTA (CREAR ÍNDICE) ---
     async def create_or_update_index(self, index_name: str, vector_dimensions: int):
-        """Define la estructura del índice, incluyendo vectores y semántica."""
+        """Define la estructura del índice enfocada en vectores."""
         try:
             fields = [
                 SimpleField(name="id", type=SearchFieldDataType.String, key=True),
@@ -115,26 +114,16 @@ class AzureAISearchService:
                 ],
             )
 
-            semantic_search = SemanticSearch(
-                configurations=[
-                    SemanticConfiguration(
-                        name="default-semantic-config",
-                        prioritized_fields=SemanticPrioritizedFields(
-                            content_fields=[SemanticField(field_name="content")],
-                            keywords_fields=[SemanticField(field_name="title")],
-                        ),
-                    )
-                ]
-            )
-
+            # Creamos el índice sin la configuración semántica para evitar errores de compatibilidad
             index = SearchIndex(
                 name=index_name,
                 fields=fields,
                 vector_search=vector_search,
-                semantic_search=semantic_search,
             )
             await self.index_client.create_or_update_index(index)
-            logger.info(f"✅ Índice '{index_name}' creado/actualizado.")
+            logger.info(
+                f"✅ Índice '{index_name}' creado/actualizado para búsqueda vectorial."
+            )
         except Exception as e:
             logger.error(f"Error creando índice: {e}")
             raise e
