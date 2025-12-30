@@ -1,34 +1,50 @@
-# src/api/core/config.py
+import logging
+from typing import Literal
+
+from pydantic import Field, HttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
-    # =======================
-    # Azure OpenAI (Modelos)
-    # =======================
-    AZURE_OPENAI_ENDPOINT: str
-    AZURE_OPENAI_API_KEY: str
+    """Configuración centralizada con validación estricta de Azure."""
+
+    # --- APP SETTINGS ---
+    ENV: Literal["dev", "prod", "test"] = "dev"
+    LOG_LEVEL: str = "INFO"
+
+    # --- AZURE OPENAI ---
+    AZURE_OPENAI_ENDPOINT: HttpUrl = Field(
+        ..., example="https://resource.openai.azure.com/"
+    )
+    AZURE_OPENAI_API_KEY: str = Field(..., min_length=32)
     AZURE_OPENAI_API_VERSION: str = "2024-05-01-preview"
 
-    # Nombre del despliegue para GPT-4 (Chat)
-    AZURE_OPENAI_CHAT_DEPLOYMENT: str
+    AZURE_OPENAI_CHAT_DEPLOYMENT: str = Field(...)
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = Field(...)
 
-    # Nombre del despliegue para Embeddings (el de 3072 dimensiones)
-    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str
+    # --- AZURE AI SEARCH ---
+    AZURE_SEARCH_ENDPOINT: HttpUrl = Field(...)
+    AZURE_SEARCH_API_KEY: str = Field(...)
+    AZURE_SEARCH_INDEX_NAME: str = Field(...)
 
-    # =======================
-    # Azure AI Search
-    # =======================
-    AZURE_SEARCH_ENDPOINT: str
-    AZURE_SEARCH_API_KEY: str
-    AZURE_SEARCH_INDEX_NAME: str
+    # --- VALIDACIONES NATIVAS ---
+    @field_validator("AZURE_OPENAI_API_KEY", "AZURE_SEARCH_API_KEY")
+    @classmethod
+    def check_empty_keys(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Las API Keys no pueden ser espacios en blanco")
+        return v
 
-    # Configuración de Pydantic V2
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",  # Cambiado a ignore para evitar que falle si hay variables extra en el .env
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False
     )
 
 
+# Instancia Singleton
 settings = Settings()
+
+# Configuración básica de logging inmediata
+logging.basicConfig(level=settings.LOG_LEVEL)
+logger.info(f"🚀 Configuración cargada en modo: {settings.ENV}")

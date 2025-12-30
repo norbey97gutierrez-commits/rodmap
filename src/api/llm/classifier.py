@@ -1,10 +1,16 @@
-import re
+import logging
 from enum import Enum
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import BaseModel, Field
 
 from src.api.llm.client import llm
+
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# MODELOS DE DATOS
+# ============================================================================
 
 
 class IntentionEnum(str, Enum):
@@ -14,44 +20,58 @@ class IntentionEnum(str, Enum):
 
 
 class IntentionResponse(BaseModel):
-    # AliasChoices permite que funcione con 'intention' O 'intencion'
-    intention: IntentionEnum = Field(
-        validation_alias=AliasChoices("intention", "intencion")
+    """Esquema de salida forzado para el LLM."""
+
+    intention: IntentionEnum = Field(..., description="La categoría de la pregunta.")
+    reasoning: str = Field(
+        ..., description="Breve explicación de por qué se eligió esta categoría."
     )
 
 
-def extract_json(text: str) -> str:
-    """Extrae el primer objeto JSON válido de un texto."""
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return '{"intention": "FUERA_DE_DOMINIO"}'
-    return match.group(0)
+# Configuración del LLM para usar Salida Estructurada (Native JSON Mode/Tools)
+# Esto hace que el LLM se comporte como un validador de Pydantic
+structured_llm = llm.with_structured_output(IntentionResponse)
+
+# ============================================================================
+# CLASIFICADOR PRINCIPAL
+# ============================================================================
 
 
 async def classify_intent(text: str) -> IntentionResponse:
+    """
+    Clasifica la intención usando Structured Output de Azure OpenAI.
+    Elimina la necesidad de Regex y limpieza manual.
+    """
+
     system_instruction = (
-        "Eres un clasificador de intenciones experto para un asistente de Azure.\n"
-        "Categoriza la entrada en una de estas etiquetas:\n"
-        "- 'SALUDO': Saludos o cortesía.\n"
-        "- 'PREGUNTA_TECNICA': Dudas sobre servicios de Azure (SQL, Redes, etc.).\n"
-        "- 'FUERA_DE_DOMINIO': Cualquier tema que NO sea tecnología o Azure (comida, deportes, etc.).\n"
-        "Responde SOLO con el JSON: " + '{"intention": "CATEGORIA"}'
+        "Eres un clasificador experto para un asistente de Microsoft Azure.\n"
+        "Categoriza la entrada según estas reglas:\n"
+        "1. SALUDO: Cortesías y charlas breves.\n"
+        "2. PREGUNTA_TECNICA: Dudas sobre servicios de Azure (VNet, SQL, App Service, etc).\n"
+        "3. FUERA_DE_DOMINIO: Temas no relacionados con Azure o tecnología.\n"
+        "\n"
+        "IMPORTANTE: Si mencionan AWS o Google Cloud, clasifica como FUERA_DE_DOMINIO."
     )
 
     try:
         messages = [
             SystemMessage(content=system_instruction),
-            HumanMessage(content=f"Clasifica: '{text}'"),
+            HumanMessage(content=f"Entrada del usuario: '{text}'"),
         ]
 
-        response = await llm.ainvoke(messages)
+        # Invocación directa: devuelve una instancia de IntentionResponse, no un string
+        result = await structured_llm.ainvoke(messages)
 
-        # Eliminamos la importación interna que causaba el error 'cannot import name'
-        json_str = extract_json(response.content)
+        # Log para trazabilidad en Azure Monitor
+        logger.info(f"Clasificación: {result.intention} | Razón: {result.reasoning}")
 
-        return IntentionResponse.model_validate_json(json_str)
+        return result
 
     except Exception as e:
-        print(f"Error detectado en clasificador: {e}")
-        # Fallback seguro
-        return IntentionResponse(intention=IntentionEnum.PREGUNTA_TECNICA)
+        logger.error(f"Error crítico en clasificación: {str(e)}", exc_info=True)
+
+        # Fallback seguro: Enrutamos a técnica para que el RAG intente responder
+        return IntentionResponse(
+            intention=IntentionEnum.PREGUNTA_TECNICA,
+            reasoning="Fallback por error en el servicio de clasificación.",
+        )

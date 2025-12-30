@@ -1,20 +1,37 @@
+"""
+RETRIEVER RAG PARA AZURE AI SEARCH
+Sistema de búsqueda y recuperación de documentos con embeddings vectoriales.
+Componente clave del flujo RAG (Retrieval Augmented Generation).
+"""
+
 from langchain_community.vectorstores.azure_ai_search import AzureAISearch
 from langchain_openai import AzureOpenAIEmbeddings
 
 from src.api.core.config import settings
 from src.api.llm.client import llm
 
-# 1. El "Traductor": Convierte texto en listas de números (Vectores)
-# Usamos el modelo que definas en tu Azure (ej: text-embedding-3-small)
+# ============================================================================
+# 1. MODELO DE EMBEDDINGS (CODIFICACIÓN DE TEXTO A VECTORES)
+# ============================================================================
+"""
+Convierte texto en vectores numéricos para búsqueda semántica.
+Modelo: text-embedding-3-large (3072 dimensiones)
+"""
 embeddings = AzureOpenAIEmbeddings(
-    azure_deployment="text-embedding-3-large",  # Reemplaza con tu nombre de despliegue
+    azure_deployment="text-embedding-3-large",
     openai_api_version=settings.AZURE_OPENAI_API_VERSION,
     azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
     api_key=settings.AZURE_OPENAI_API_KEY,
 )
 
-# 2. El "Almacén": Conexión vectorial con Azure AI Search
-# Este objeto sabe cómo buscar vectores en tu índice
+
+# ============================================================================
+# 2. VECTOR STORE (ALMACÉN DE VECTORES EN AZURE AI SEARCH)
+# ============================================================================
+"""
+Conexión al índice de Azure AI Search para búsquedas vectoriales.
+Index: Configurado previamente con esquema de vectores (3072D).
+"""
 vector_store = AzureAISearch(
     azure_search_endpoint=settings.AZURE_SEARCH_ENDPOINT,
     azure_search_key=settings.AZURE_SEARCH_API_KEY,
@@ -23,38 +40,51 @@ vector_store = AzureAISearch(
 )
 
 
-async def rag_query(query: str):
-    # 3. Recuperación (Retrieve):
-    # Busca los 3 fragmentos (k=3) más similares vectorialmente a la pregunta
+# ============================================================================
+# 3. FUNCIÓN PRINCIPAL DE CONSULTA RAG
+# ============================================================================
+async def rag_query(query: str) -> dict:
+    """
+    Ejecuta el flujo completo RAG: Retrieve + Augment + Generate.
+
+    Args:
+        query: Pregunta del usuario
+
+    Returns:
+        dict con respuesta generada y contexto usado
+    """
+    # ----- FASE 1: RECUPERACIÓN (RETRIEVE) -----
+    # Búsqueda por similitud semántica (k=3 resultados más relevantes)
     docs = vector_store.similarity_search(query, k=3)
 
-    # 4. Construcción del contexto con "Citas de Fuentes"
-    # Incluimos el contenido y el origen para que el LLM pueda citar
+    # ----- FASE 2: CONSTRUCCIÓN DE CONTEXTO -----
+    # Formatea documentos con fuentes para trazabilidad
     context_list = []
-    for i, d in enumerate(docs):
-        source_info = f"[Fuente {i + 1}: {d.metadata.get('source', 'Desconocido')}]"
-        context_list.append(f"{source_info}\n{d.page_content}")
+    for i, doc in enumerate(docs):
+        source = f"[Fuente {i + 1}: {doc.metadata.get('source', 'Desconocido')}]"
+        context_list.append(f"{source}\n{doc.page_content}")
 
     context_text = "\n\n---\n\n".join(context_list)
 
-    # 5. Prompt con Grounding y Citación
+    # ----- FASE 3: GENERACIÓN CON GROUNDING -----
+    # Prompt que fuerza al LLM a usar solo el contexto proporcionado
     prompt = f"""
-Eres un asistente técnico experto. Tu tarea es responder la pregunta del usuario basándote UNICAMENTE en el contexto proporcionado.
+Basándote EXCLUSIVAMENTE en esta documentación:
 
-REGLAS CRÍTICAS:
-1. Si la respuesta no está en el contexto, di: "Lo siento, no tengo información suficiente en mis manuales técnicos."
-2. Al final de tu respuesta, indica qué fuentes utilizaste (ej: "Fuente 1, Fuente 2").
-3. Mantén un tono profesional.
-
-CONTEXTO:
 {context_text}
 
-PREGUNTA DEL USUARIO:
-{query}
+Responde esta pregunta: {query}
+
+Reglas:
+1. Solo usa información del contexto
+2. Cita las fuentes al final
+3. Si no hay información, indícalo
 """
 
-    # 6. Generación (Generate)
+    # ----- FASE 4: GENERACIÓN DE RESPUESTA -----
     response = await llm.ainvoke(prompt)
 
-    # Devolvemos tanto la respuesta como el contexto (para el State del grafo)
-    return {"response": response.content, "context": context_list}
+    return {
+        "response": response.content,  # Respuesta generada
+        "context": context_list,  # Fuentes usadas (para trazabilidad)
+    }

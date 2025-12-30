@@ -1,9 +1,11 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.aio import SearchIndexClient
+
+# 1. Modelos para ESTRUCTURA del índice (Creación)
 from azure.search.documents.indexes.models import (
     HnswAlgorithmConfiguration,
     HnswParameters,
@@ -19,7 +21,12 @@ from azure.search.documents.indexes.models import (
     VectorSearch,
     VectorSearchProfile,
 )
-from azure.search.documents.models import VectorizedQuery
+
+# 2. Modelos para OPERACIONES de búsqueda (Ejecución)
+from azure.search.documents.models import (
+    QueryType,  # <-- QueryType se importa de aquí, no de indexes
+    VectorizedQuery,
+)
 
 from src.api.core.config import settings
 
@@ -27,128 +34,71 @@ logger = logging.getLogger(__name__)
 
 
 class AzureAISearchService:
-    def __init__(
-        self, endpoint: Optional[str] = None, api_key: Optional[str] = None, **kwargs
-    ):
-        self.endpoint = endpoint or settings.AZURE_SEARCH_ENDPOINT
-        self.api_key = api_key or settings.AZURE_SEARCH_API_KEY
+    def __init__(self):
+        self.endpoint = str(settings.AZURE_SEARCH_ENDPOINT)
+        self.api_key = settings.AZURE_SEARCH_API_KEY
+        self.index_name = settings.AZURE_SEARCH_INDEX_NAME
         self.credential = AzureKeyCredential(self.api_key)
         self.index_client = SearchIndexClient(
             endpoint=self.endpoint, credential=self.credential
         )
 
-    # src/api/search/service.py
-
+    # --- MÉTODO PARA BÚSQUEDA (RAG) ---
     async def search_technical_docs(self, query: str) -> Dict[str, Any]:
+        """Realiza búsqueda híbrida y semántica en el índice."""
         from src.api.graph import embeddings_model
 
         try:
             query_vector = await embeddings_model.aembed_query(query)
-            docs = await self.search(
-                index_name=settings.AZURE_SEARCH_INDEX_NAME,
-                query=query,
-                query_vector=query_vector,
-                top_k=5,  # Pedimos 5 para tener más de donde elegir
-            )
+            async with SearchClient(
+                self.endpoint, self.index_name, self.credential
+            ) as client:
+                vector_query = VectorizedQuery(
+                    vector=query_vector, k_nearest_neighbors=5, fields="content_vector"
+                )
 
-            # --- MEJORA: RE-RANKING / THRESHOLD ---
-            UMBRAL_RELEVANCIA = 0.03  # Solo aceptamos documentos con score > 0.03
-            docs_validos = [d for d in docs if d.get("score", 0) >= UMBRAL_RELEVANCIA]
+                results = await client.search(
+                    search_text=query,
+                    vector_queries=[vector_query],
+                    query_type=QueryType.SEMANTIC,
+                    semantic_configuration_name="default-semantic-config",
+                    top=5,
+                    select=["title", "content", "source"],
+                )
 
-            if not docs_validos:
+                context_blocks = []
+                sources = []
+                async for result in results:
+                    context_blocks.append(
+                        f"FUENTE: {result['title']}\nCONTENIDO: {result['content']}"
+                    )
+                    if result.get("source"):
+                        sources.append(result["source"])
+
                 return {
-                    "content": "No encontré información lo suficientemente precisa en los manuales.",
-                    "sources": [],
+                    "content": "\n\n---\n\n".join(context_blocks),
+                    "sources": list(dict.fromkeys(sources)),
                 }
-
-            context_parts = []
-            sources = []
-            for d in docs_validos:
-                context_parts.append(
-                    f"DOCUMENTO: {d['title']}\nCONTENIDO: {d['content']}"
-                )
-                if d.get("source"):
-                    sources.append(d["source"])
-
-            return {
-                "content": "\n\n---\n\n".join(context_parts),
-                "sources": list(set(sources)),
-            }
         except Exception as e:
-            logger.error(f"Error en search_technical_docs: {e}")
-            return {"content": f"Error: {str(e)}", "sources": []}
+            logger.error(f"Error en búsqueda: {e}")
+            return {"content": "", "sources": []}
 
-    async def search(
-        self, index_name: str, query: str, query_vector: List[float], top_k: int = 3
-    ) -> List[Dict[str, Any]]:
-        """Método core de búsqueda (Ahora correctamente indentado dentro de la clase)."""
-        async with SearchClient(
-            endpoint=self.endpoint, index_name=index_name, credential=self.credential
-        ) as search_client:
-            vector_query = VectorizedQuery(
-                vector=query_vector, k_nearest_neighbors=top_k, fields="content_vector"
-            )
-
-            results = await search_client.search(
-                search_text=query,
-                vector_queries=[vector_query],
-                select=["title", "content", "source"],
-                top=top_k,
-            )
-
-            found_docs = []
-            async for result in results:
-                score = result.get("@search.score")
-                found_docs.append(
-                    {
-                        "title": result.get("title"),
-                        "content": result.get("content"),
-                        "source": result.get("source"),
-                        "score": score,
-                    }
-                )
-                # Log para ver la relevancia en la terminal
-                print(f"[DEBUG] Documento: {result.get('title')} | Score: {score}")
-
-            return found_docs
-
-    async def create_or_update_index(
-        self, index_name: str, vector_dimensions: int = 3072
-    ) -> bool:
-        """Define la estructura del índice en Azure."""
+    # --- MÉTODO PARA INGESTA (CREAR ÍNDICE) ---
+    async def create_or_update_index(self, index_name: str, vector_dimensions: int):
+        """Define la estructura del índice, incluyendo vectores y semántica."""
         try:
             fields = [
-                SimpleField(
-                    name="id",
-                    type=SearchFieldDataType.String,
-                    key=True,
-                    filterable=True,
-                ),
-                SearchableField(
-                    name="title", type=SearchFieldDataType.String, retrievable=True
-                ),
-                SearchableField(
-                    name="content", type=SearchFieldDataType.String, retrievable=True
-                ),
+                SimpleField(name="id", type=SearchFieldDataType.String, key=True),
+                SearchableField(name="title", type=SearchFieldDataType.String),
+                SearchableField(name="content", type=SearchFieldDataType.String),
                 SearchField(
                     name="content_vector",
                     type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                    searchable=True,
                     vector_search_dimensions=vector_dimensions,
                     vector_search_profile_name="default-vector-profile",
                 ),
-                SimpleField(
-                    name="category",
-                    type=SearchFieldDataType.String,
-                    filterable=True,
-                    facetable=True,
-                ),
-                SimpleField(
-                    name="source",
-                    type=SearchFieldDataType.String,
-                    filterable=True,
-                    retrievable=True,
-                ),
+                SimpleField(name="category", type=SearchFieldDataType.String),
+                SimpleField(name="source", type=SearchFieldDataType.String),
             ]
 
             vector_search = VectorSearch(
@@ -184,25 +134,17 @@ class AzureAISearchService:
                 semantic_search=semantic_search,
             )
             await self.index_client.create_or_update_index(index)
-            return True
+            logger.info(f"✅ Índice '{index_name}' creado/actualizado.")
         except Exception as e:
             logger.error(f"Error creando índice: {e}")
-            return False
+            raise e
 
-    async def upsert_vectors(
-        self, index_name: str, vectors: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Sube documentos al índice."""
-        async with SearchClient(
-            endpoint=self.endpoint, index_name=index_name, credential=self.credential
-        ) as search_client:
-            try:
-                results = await search_client.upload_documents(documents=vectors)
-                success_count = sum(1 for r in results if r.succeeded)
-                return {
-                    "total_success": success_count,
-                    "total_failed": len(vectors) - success_count,
-                }
-            except Exception as e:
-                logger.error(f"Error en upsert_vectors: {e}")
-                return {"total_success": 0, "total_failed": len(vectors)}
+    # --- MÉTODO PARA SUBIR VECTORES ---
+    async def upsert_vectors(self, index_name: str, vectors: List[Dict[str, Any]]):
+        """Sube los documentos procesados con sus embeddings al índice."""
+        async with SearchClient(self.endpoint, index_name, self.credential) as client:
+            results = await client.upload_documents(documents=vectors)
+            return {
+                "total_success": sum(1 for r in results if r.succeeded),
+                "total_failed": sum(1 for r in results if not r.succeeded),
+            }
