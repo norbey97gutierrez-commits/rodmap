@@ -16,7 +16,7 @@ El backend está diseñado siguiendo una evolución natural de capacidades de IA
 ### 1. Requisitos Previos
 
 * Python 3.10+
-* Cuenta de Azure con recursos de **Azure OpenAI** y **Azure AI Search**[cite: 5, 6].
+* Cuenta de Azure con recursos de **Azure OpenAI** y **Azure AI Search**.
 
 ### 2. Variables de Entorno (`.env`)
 
