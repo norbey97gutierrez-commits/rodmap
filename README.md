@@ -1,4 +1,4 @@
-# 🚀 Azure AI Roadmap - Backend (Caso 8)
+# 🚀 Arquitecto Azure AI - Backend
 
 Este proyecto representa un Ingeniero de IA en Azure. Es un sistema de asistencia técnica profesional que utiliza arquitecturas de **Agentes RAG** (Retrieval-Augmented Generation) para responder consultas basadas en documentación específica.
 
