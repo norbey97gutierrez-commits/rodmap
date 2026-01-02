@@ -22,20 +22,26 @@ El backend está diseñado siguiendo una evolución natural de capacidades de IA
 
 * Crea un archivo `.env` en la raíz del backend con los siguientes parámetros:
 
-    AZURE_OPENAI_API_KEY="tu_llave"
-    AZURE_OPENAI_ENDPOINT="tu_endpoint"
-    AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4o-mini"
-    AZURE_AI_SEARCH_SERVICE_NAME="tu_servicio"
-    AZURE_AI_SEARCH_INDEX_NAME="tu_indice"
-    AZURE_AI_SEARCH_API_KEY="tu_api_key"
+```sh
+AZURE_OPENAI_API_KEY="tu_llave"
+AZURE_OPENAI_ENDPOINT="tu_endpoint"
+AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4o-mini"
+AZURE_AI_SEARCH_SERVICE_NAME="tu_servicio"
+AZURE_AI_SEARCH_INDEX_NAME="tu_indice"
+AZURE_AI_SEARCH_API_KEY="tu_api_key"
+```
 
 ### 3. Instalación de Dependencias
 
-    pip install -r requirements.txt
+```sh
+pip install -r requirements.txt
+```
 
 ### 4. Ejecución del Servidor
 
+```sh
      uvicorn src.main:app --reload
+```
 
 Acceda a la documentación interactiva Swagger en:<http://127.0.0.1:8000/docs>
 
@@ -49,6 +55,7 @@ POST /api/v1/chat/stream: Endpoint principal que recibe la pregunta y devuelve u
 
 La arquitectura propuesta es:
 
+```sh
     RODMAP/
     ├── data/               # Archivos JSON locales para indexación
     ├── src/
