@@ -10,11 +10,11 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     """Configuración centralizada con validación estricta de Azure."""
 
-    # --- APP SETTINGS ---
+    # APP SETTINGS
     ENV: Literal["dev", "prod", "test"] = "dev"
     LOG_LEVEL: str = "INFO"
 
-    # --- AZURE OPENAI ---
+    # AZURE OPENAI
     AZURE_OPENAI_ENDPOINT: HttpUrl = Field(
         ..., example="https://resource.openai.azure.com/"
     )
@@ -24,12 +24,12 @@ class Settings(BaseSettings):
     AZURE_OPENAI_CHAT_DEPLOYMENT: str = Field(...)
     AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = Field(...)
 
-    # --- AZURE AI SEARCH ---
+    # AZURE AI SEARCH
     AZURE_SEARCH_ENDPOINT: HttpUrl = Field(...)
     AZURE_SEARCH_API_KEY: str = Field(...)
     AZURE_SEARCH_INDEX_NAME: str = Field(...)
 
-    # --- VALIDACIONES NATIVAS ---
+    # VALIDACIONES NATIVAS
     @field_validator("AZURE_OPENAI_API_KEY", "AZURE_SEARCH_API_KEY")
     @classmethod
     def check_empty_keys(cls, v: str) -> str:
@@ -47,4 +47,4 @@ settings = Settings()
 
 # Configuración básica de logging inmediata
 logging.basicConfig(level=settings.LOG_LEVEL)
-logger.info(f"🚀 Configuración cargada en modo: {settings.ENV}")
+logger.info(f"Configuración cargada en modo: {settings.ENV}")

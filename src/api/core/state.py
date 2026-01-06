@@ -1,66 +1,41 @@
-from typing import Annotated, List, Optional, Sequence, TypedDict
+from typing import Annotated, Any, List, Optional, Sequence, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
-# ============================================================================
-# FUNCIONES DE FUSIÓN (REDUCERS)
-# ============================================================================
 
-
-def merge_sources(left: Optional[List[str]], right: Optional[List[str]]) -> List[str]:
+def merge_sources(left: Optional[List[Any]], right: Optional[List[Any]]) -> List[Any]:
     """
-    Combina fuentes de manera única preservando el orden.
-    Annotated indica a LangGraph que use esta función para 'sumar' estados.
+    Mantiene una lista única de fuentes basada en el título y página.
     """
     if not left:
         left = []
     if not right:
         right = []
 
-    # Combinación eficiente manteniendo orden de inserción (Python 3.7+)
-    return list(dict.fromkeys(left + right))
+    combined = left + right
+    unique_sources = []
+    seen_ids = set()
 
+    for s in combined:
+        if isinstance(s, dict):
+            # Creamos un ID único combinando el nombre del archivo y la página
+            s_id = f"{s.get('title', '')}-{s.get('url', '')}"
+        else:
+            s_id = str(s)
 
-# ============================================================================
-# DEFINICIÓN DEL ESTADO DEL GRAFO
-# ============================================================================
+        if s_id not in seen_ids:
+            seen_ids.add(s_id)
+            unique_sources.append(s)
+
+    return unique_sources
 
 
 class GraphState(TypedDict):
-    """
-    Esquema de estado para el orquestador de Azure OpenAI.
-    """
-
-    # ENTRADA: Inmutable durante el ciclo del grafo
     input: str
-
-    # CLASIFICACIÓN: Controla el flujo en 'should_continue'
-    # Valores: "EN_DOMINIO", "FUERA_DE_DOMINIO"
     intention: Optional[str]
-
-    # FUENTES: Acumulativas y únicas mediante merge_sources
-    sources: Annotated[List[str], merge_sources]
-
-    # RESPUESTA: El texto final o parcial para el usuario
+    context: str
+    # Usamos merge_sources para que las fuentes se acumulen correctamente
+    sources: Annotated[List[Any], merge_sources]
     response: str
-
-    # MEMORIA: Gestionada automáticamente por LangGraph (add_messages)
-    # Fundamental para que el Checkpointer persista la sesión.
     history: Annotated[Sequence[BaseMessage], add_messages]
-
-
-# ============================================================================
-# FACTORY FUNCTIONS
-# ============================================================================
-
-
-def create_initial_state(user_input: str) -> GraphState:
-    """Crea la estructura base para una nueva ejecución."""
-    return {
-        "input": user_input,
-        "intention": None,
-        "sources": [],
-        "response": "",
-        "history": [],
-    }

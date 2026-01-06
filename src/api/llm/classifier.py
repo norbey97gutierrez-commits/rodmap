@@ -8,11 +8,8 @@ from src.api.llm.client import llm
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
+
 # MODELOS DE DATOS
-# ============================================================================
-
-
 class IntentionEnum(str, Enum):
     SALUDO = "SALUDO"
     PREGUNTA_TECNICA = "PREGUNTA_TECNICA"
@@ -28,15 +25,11 @@ class IntentionResponse(BaseModel):
     )
 
 
-# Configuración del LLM para usar Salida Estructurada (Native JSON Mode/Tools)
-# Esto hace que el LLM se comporte como un validador de Pydantic
+# Configuración del LLM para usar Salida Estructurada
 structured_llm = llm.with_structured_output(IntentionResponse)
 
-# ============================================================================
+
 # CLASIFICADOR PRINCIPAL
-# ============================================================================
-
-
 async def classify_intent(text: str) -> IntentionResponse:
     """
     Clasifica la intención usando Structured Output de Azure OpenAI.
@@ -50,7 +43,7 @@ async def classify_intent(text: str) -> IntentionResponse:
         "2. PREGUNTA_TECNICA: Dudas sobre servicios de Azure (VNet, SQL, App Service, etc).\n"
         "3. FUERA_DE_DOMINIO: Temas no relacionados con Azure o tecnología.\n"
         "\n"
-        "IMPORTANTE: Si mencionan AWS o Google Cloud, clasifica como FUERA_DE_DOMINIO."
+        "IMPORTANTE: Si la pregunta menciona AWS, Amazon Web Services, Google Cloud, GCP o cualquier tecnología que no sea Microsoft Azure, clasifica OBLIGATORIAMENTE como FUERA_DE_DOMINIO."
     )
 
     try:
@@ -59,7 +52,7 @@ async def classify_intent(text: str) -> IntentionResponse:
             HumanMessage(content=f"Entrada del usuario: '{text}'"),
         ]
 
-        # Invocación directa: devuelve una instancia de IntentionResponse, no un string
+        # Invocación directa: devolvemos una instancia de IntentionResponse
         result = await structured_llm.ainvoke(messages)
 
         # Log para trazabilidad en Azure Monitor

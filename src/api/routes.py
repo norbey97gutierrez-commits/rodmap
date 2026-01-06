@@ -1,11 +1,10 @@
 import logging
 import uuid
-from typing import Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-# Importamos la instancia del grafo compilado
 from src.api.graph import app as graph_app
 
 logger = logging.getLogger(__name__)
@@ -15,82 +14,72 @@ router = APIRouter(
     tags=["chat"],
 )
 
-# ============================================================================
-# MODELOS DE DATOS
-# ============================================================================
+# --- MODELOS DE DATOS ---
 
 
 class ChatRequest(BaseModel):
-    """Esquema de entrada para la consulta."""
-
-    text: str = Field(
-        ...,
-        min_length=1,
-        max_length=4000,
-        description="La pregunta técnica sobre Azure.",
-        example="¿Cómo se configura una VNet?",
-    )
-    thread_id: Optional[str] = Field(
-        None,
-        description="ID de sesión para mantener el historial de la conversación.",
-        example="sesion-azure-001",
-    )
+    text: str = Field(..., min_length=1, max_length=4000)
+    thread_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
-    """Esquema de salida JSON único."""
-
     thread_id: str
     intention: str
     response: str
-    sources: list[str]
+    sources: List[Any]  # Lista de diccionarios {title, url, page}
     status: str
 
 
-# ============================================================================
-# ENDPOINTS
-# ============================================================================
+# --- ENDPOINTS ---
 
 
-@router.post("/stream", response_model=ChatResponse)
+@router.post("/query", response_model=ChatResponse)
 async def chat_endpoint_json(request: ChatRequest):
     """
-    Endpoint que procesa la pregunta y devuelve una respuesta JSON completa.
-    Ejecuta el flujo RAG: Clasificación -> Búsqueda -> Generación -> Citas.
+    Procesa la pregunta y devuelve la respuesta JSON con fuentes.
     """
-    # Generar un thread_id si no se proporciona para mantener la trazabilidad
     thread_id = request.thread_id or str(uuid.uuid4())
 
-    # Preparar la entrada para el Grafo de LangGraph
-    inputs = {"input": request.text}
+    # IMPORTANTE: El input debe coincidir con las llaves de tu GraphState
+    # Si tu grafo espera 'input' y 'history', los enviamos aquí.
+    inputs = {
+        "input": request.text,
+        "history": [],  # LangGraph recuperará el historial del checkpointer usando el thread_id
+    }
+
     config = {"configurable": {"thread_id": thread_id}}
 
     try:
-        logger.info(f"Procesando consulta para thread_id: {thread_id}")
+        logger.info(f"Invocando grafo para thread_id: {thread_id}")
 
-        # Invocamos el grafo de forma asíncrona y esperamos el estado final
-        # ainvoke recorre todos los nodos (agent -> tools -> agent) automáticamente
+        # Ejecución del grafo: ainvoke devuelve el estado FINAL tras pasar por 'finalize'
         final_state = await graph_app.ainvoke(inputs, config)
 
-        # Extraemos la información del estado final del grafo
-        # El intention viene del Enum, lo convertimos a string para el JSON
+        # DEBUG: Verifica en consola si el estado final contiene lo que finalize_node generó
+        logger.info(f"Estado final recuperado: {final_state.keys()}")
+
+        # Extraemos los campos que finalize_node inyectó en el estado
+        response_text = final_state.get(
+            "response", "No pude generar una respuesta técnica."
+        )
+        sources = final_state.get("sources", [])
+        intention = str(final_state.get("intention", "UNKNOWN"))
+
+        logger.info(f"Fuentes encontradas: {len(sources)}")
+
         return ChatResponse(
             thread_id=thread_id,
-            intention=str(final_state.get("intention")),
-            response=final_state.get("response", "Sin respuesta generada"),
-            sources=final_state.get("sources", []),
+            intention=intention,
+            response=response_text,
+            sources=sources,
             status="success",
         )
 
     except Exception as e:
-        logger.error(f"Error crítico en el endpoint de chat: {str(e)}", exc_info=True)
-        # Devolvemos un error 500 estructurado si algo falla en el proceso
-        raise HTTPException(
-            status_code=500, detail=f"Error interno al procesar la solicitud: {str(e)}"
-        )
+        logger.error(f"Error en chat_endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 
 @router.get("/health")
 async def health_check():
-    """Endpoint simple para verificar que el servicio de rutas está activo."""
-    return {"status": "healthy", "service": "azure-ai-chat-api"}
+    return {"status": "healthy"}

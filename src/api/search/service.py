@@ -5,7 +5,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.aio import SearchIndexClient
 
-# 1. Modelos para ESTRUCTURA del índice
+# Modelos para ESTRUCTURA del índice
 from azure.search.documents.indexes.models import (
     HnswAlgorithmConfiguration,
     HnswParameters,
@@ -16,13 +16,13 @@ from azure.search.documents.indexes.models import (
     SimpleField,
     VectorSearch,
     VectorSearchProfile,
-    # Eliminamos SemanticSearch y derivados para simplificar
 )
 
-# 2. Modelos para OPERACIONES de búsqueda
+# Modelos para OPERACIONES de búsqueda
 from azure.search.documents.models import (
     VectorizedQuery,
 )
+from langchain_openai import AzureOpenAIEmbeddings
 
 from src.api.core.config import settings
 
@@ -39,13 +39,19 @@ class AzureAISearchService:
             endpoint=self.endpoint, credential=self.credential
         )
 
-    # --- MÉTODO PARA BÚSQUEDA (RAG) ACTUALIZADO ---
+    # MÉTODO PARA BÚSQUEDA (RAG)
     async def search_technical_docs(self, query: str) -> Dict[str, Any]:
-        """Realiza búsqueda híbrida (Vectorial + Texto) sin dependencia semántica."""
-        from src.api.graph import embeddings_model
+        """Realiza búsqueda híbrida (Vectorial + Texto) recuperando metadatos de página."""
+
+        # Inicialización local para evitar importaciones circulares
+        embeddings_model = AzureOpenAIEmbeddings(
+            azure_deployment=settings.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+            azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT),
+            api_key=settings.AZURE_OPENAI_API_KEY,
+        )
 
         try:
-            # Generamos el vector de la consulta del usuario
+            # Generamos el vector de la pregunta del usuario
             query_vector = await embeddings_model.aembed_query(query)
 
             async with SearchClient(
@@ -57,34 +63,43 @@ class AzureAISearchService:
                 )
 
                 # Ejecutamos búsqueda Híbrida (Texto + Vectores)
-                # Eliminamos query_type=SEMANTIC y semantic_configuration_name
+                # IMPORTANTE: Incluimos "page_number" en el select
                 results = await client.search(
                     search_text=query,
                     vector_queries=[vector_query],
                     top=5,
-                    select=["title", "content", "source"],
+                    select=["title", "content", "source", "page_number"],
                 )
 
                 context_blocks = []
                 sources = []
                 async for result in results:
+                    # Extraemos el valor real del campo o marcamos como N/A si no existe
+                    page = result.get("page_number")
+                    page_label = str(page) if page is not None else "N/A"
+
+                    # Construimos un bloque de contexto enriquecido para el LLM
                     context_blocks.append(
-                        f"FUENTE: {result['title']}\nCONTENIDO: {result['content']}"
+                        f"FUENTE: {result['title']}\n"
+                        f"METADATOS: Archivo {result['source']}, Página {page_label}\n"
+                        f"CONTENIDO: {result['content']}"
                     )
+
+                    # Guardamos la fuente formateada para las etiquetas del frontend
                     if result.get("source"):
-                        sources.append(result["source"])
+                        sources.append(f"{result['source']} (Pág. {page_label})")
 
                 return {
                     "content": "\n\n---\n\n".join(context_blocks),
-                    "sources": list(dict.fromkeys(sources)),
+                    "sources": list(dict.fromkeys(sources)),  # Eliminamos duplicados
                 }
         except Exception as e:
-            logger.error(f"Error en búsqueda vectorial: {e}")
+            logger.error(f"Error en búsqueda técnica: {e}")
             return {"content": "", "sources": []}
 
-    # --- MÉTODO PARA INGESTA (CREAR ÍNDICE) ---
+    # MÉTODO PARA INGESTA (CREAMOS EL ÍNDICE)
     async def create_or_update_index(self, index_name: str, vector_dimensions: int):
-        """Define la estructura del índice enfocada en vectores."""
+        """Define la estructura del índice incluyendo campos de metadatos y vectores."""
         try:
             fields = [
                 SimpleField(name="id", type=SearchFieldDataType.String, key=True),
@@ -98,6 +113,8 @@ class AzureAISearchService:
                 ),
                 SimpleField(name="category", type=SearchFieldDataType.String),
                 SimpleField(name="source", type=SearchFieldDataType.String),
+                # Campo crucial para la trazabilidad documental
+                SimpleField(name="page_number", type=SearchFieldDataType.Int32),
             ]
 
             vector_search = VectorSearch(
@@ -114,7 +131,6 @@ class AzureAISearchService:
                 ],
             )
 
-            # Creamos el índice sin la configuración semántica para evitar errores de compatibilidad
             index = SearchIndex(
                 name=index_name,
                 fields=fields,
@@ -122,15 +138,15 @@ class AzureAISearchService:
             )
             await self.index_client.create_or_update_index(index)
             logger.info(
-                f"✅ Índice '{index_name}' creado/actualizado para búsqueda vectorial."
+                f"Índice '{index_name}' creado con éxito incluyendo campo 'page_number'."
             )
         except Exception as e:
             logger.error(f"Error creando índice: {e}")
             raise e
 
-    # --- MÉTODO PARA SUBIR VECTORES ---
+    # MÉTODO PARA SUBIR VECTORES
     async def upsert_vectors(self, index_name: str, vectors: List[Dict[str, Any]]):
-        """Sube los documentos procesados con sus embeddings al índice."""
+        """Sube los documentos procesados al índice de búsqueda."""
         async with SearchClient(self.endpoint, index_name, self.credential) as client:
             results = await client.upload_documents(documents=vectors)
             return {
