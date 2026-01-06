@@ -4,8 +4,6 @@ from typing import Any, Dict, List
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.aio import SearchIndexClient
-
-# Modelos para ESTRUCTURA del índice
 from azure.search.documents.indexes.models import (
     HnswAlgorithmConfiguration,
     HnswParameters,
@@ -17,11 +15,7 @@ from azure.search.documents.indexes.models import (
     VectorSearch,
     VectorSearchProfile,
 )
-
-# Modelos para OPERACIONES de búsqueda
-from azure.search.documents.models import (
-    VectorizedQuery,
-)
+from azure.search.documents.models import VectorizedQuery
 from langchain_openai import AzureOpenAIEmbeddings
 
 from src.api.core.config import settings
@@ -31,19 +25,23 @@ logger = logging.getLogger(__name__)
 
 class AzureAISearchService:
     def __init__(self):
+        """Inicializa las credenciales y clientes para gestionar el índice y las búsquedas."""
         self.endpoint = str(settings.AZURE_SEARCH_ENDPOINT)
         self.api_key = settings.AZURE_SEARCH_API_KEY
         self.index_name = settings.AZURE_SEARCH_INDEX_NAME
         self.credential = AzureKeyCredential(self.api_key)
+
+        # Cliente para operaciones de administración (crear/actualizar índices)
         self.index_client = SearchIndexClient(
             endpoint=self.endpoint, credential=self.credential
         )
 
-    # MÉTODO PARA BÚSQUEDA (RAG)
     async def search_technical_docs(self, query: str) -> Dict[str, Any]:
-        """Realiza búsqueda híbrida (Vectorial + Texto) recuperando metadatos de página."""
-
-        # Inicialización local para evitar importaciones circulares
+        """
+        Realiza búsqueda híbrida (Vectorial + Texto plano).
+        Retorna contexto para el LLM y datos estructurados para el Grafo.
+        """
+        # Configuración del modelo de embeddings para convertir texto en vectores
         embeddings_model = AzureOpenAIEmbeddings(
             azure_deployment=settings.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
             azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT),
@@ -51,19 +49,18 @@ class AzureAISearchService:
         )
 
         try:
-            # Generamos el vector de la pregunta del usuario
+            # Convierte la duda del usuario en un vector numérico
             query_vector = await embeddings_model.aembed_query(query)
 
             async with SearchClient(
                 self.endpoint, self.index_name, self.credential
             ) as client:
-                # Definimos la consulta vectorial
+                # Define la búsqueda vectorial (K=5 vecinos más cercanos)
                 vector_query = VectorizedQuery(
                     vector=query_vector, k_nearest_neighbors=5, fields="content_vector"
                 )
 
-                # Ejecutamos búsqueda Híbrida (Texto + Vectores)
-                # IMPORTANTE: Incluimos "page_number" en el select
+                # Ejecuta búsqueda Híbrida: combina relevancia semántica y palabras clave
                 results = await client.search(
                     search_text=query,
                     vector_queries=[vector_query],
@@ -71,36 +68,44 @@ class AzureAISearchService:
                     select=["title", "content", "source", "page_number"],
                 )
 
-                context_blocks = []
-                sources = []
+                context_blocks = []  # Para alimentar al LLM
+                raw_docs = []  # Para extraer metadatos de fuentes
+
                 async for result in results:
-                    # Extraemos el valor real del campo o marcamos como N/A si no existe
                     page = result.get("page_number")
                     page_label = str(page) if page is not None else "N/A"
 
-                    # Construimos un bloque de contexto enriquecido para el LLM
+                    # Formatea el bloque de texto que leerá el Arquitecto Azure (LLM)
                     context_blocks.append(
-                        f"FUENTE: {result['title']}\n"
-                        f"METADATOS: Archivo {result['source']}, Página {page_label}\n"
-                        f"CONTENIDO: {result['content']}"
+                        f"FUENTE: {result.get('title', 'Sin título')}\n"
+                        f"METADATOS: Archivo {result.get('source')}, Página {page_label}\n"
+                        f"CONTENIDO: {result.get('content')}"
                     )
 
-                    # Guardamos la fuente formateada para las etiquetas del frontend
-                    if result.get("source"):
-                        sources.append(f"{result['source']} (Pág. {page_label})")
+                    # Estructura los datos para el nodo de finalización de LangGraph
+                    raw_docs.append(
+                        {
+                            "source": result.get("source"),
+                            "page_number": page,
+                            "title": result.get("title"),
+                            "url": result.get("url") or "#",
+                        }
+                    )
 
+                # Retorno clave: 'content' para el prompt, 'value' para las citas
                 return {
                     "content": "\n\n---\n\n".join(context_blocks),
-                    "sources": list(dict.fromkeys(sources)),  # Eliminamos duplicados
+                    "value": raw_docs,
                 }
+
         except Exception as e:
             logger.error(f"Error en búsqueda técnica: {e}")
-            return {"content": "", "sources": []}
+            return {"content": "", "value": []}
 
-    # MÉTODO PARA INGESTA (CREAMOS EL ÍNDICE)
     async def create_or_update_index(self, index_name: str, vector_dimensions: int):
-        """Define la estructura del índice incluyendo campos de metadatos y vectores."""
+        """Define y crea la arquitectura del índice en Azure AI Search."""
         try:
+            # Definición de campos: Searchable (buscable por texto), Simple (filtro/metadato)
             fields = [
                 SimpleField(name="id", type=SearchFieldDataType.String, key=True),
                 SearchableField(name="title", type=SearchFieldDataType.String),
@@ -113,10 +118,10 @@ class AzureAISearchService:
                 ),
                 SimpleField(name="category", type=SearchFieldDataType.String),
                 SimpleField(name="source", type=SearchFieldDataType.String),
-                # Campo crucial para la trazabilidad documental
                 SimpleField(name="page_number", type=SearchFieldDataType.Int32),
             ]
 
+            # Configuración de búsqueda vectorial usando el algoritmo HNSW
             vector_search = VectorSearch(
                 algorithms=[
                     HnswAlgorithmConfiguration(
@@ -136,17 +141,15 @@ class AzureAISearchService:
                 fields=fields,
                 vector_search=vector_search,
             )
+            # Sincroniza la configuración con la nube de Azure
             await self.index_client.create_or_update_index(index)
-            logger.info(
-                f"Índice '{index_name}' creado con éxito incluyendo campo 'page_number'."
-            )
+            logger.info(f"Índice '{index_name}' actualizado.")
         except Exception as e:
             logger.error(f"Error creando índice: {e}")
             raise e
 
-    # MÉTODO PARA SUBIR VECTORES
     async def upsert_vectors(self, index_name: str, vectors: List[Dict[str, Any]]):
-        """Sube los documentos procesados al índice de búsqueda."""
+        """Sube o actualiza documentos (chunks de texto + vectores) en el índice."""
         async with SearchClient(self.endpoint, index_name, self.credential) as client:
             results = await client.upload_documents(documents=vectors)
             return {
