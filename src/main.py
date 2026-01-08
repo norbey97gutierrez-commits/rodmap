@@ -17,7 +17,6 @@ app = FastAPI(
 )
 
 # MIDDLEWARE CORS
-# Durante desarrollo, permitir todo. En producción, especificar el dominio del frontend.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,7 +26,6 @@ app.add_middleware(
 )
 
 # INCLUSIÓN DE RUTAS
-# El prefijo /api/v1 hará que el endpoint sea: http://localhost:8000/api/v1/chat/query
 app.include_router(chat_router, prefix="/api/v1")
 
 

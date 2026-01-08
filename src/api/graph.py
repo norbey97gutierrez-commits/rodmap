@@ -35,21 +35,20 @@ async def router_node(state: GraphState) -> dict:
 async def agent_node(state: GraphState) -> dict:
     """Mantiene la continuidad pero prioriza los datos nuevos."""
     history = state.get("history", [])
-    current_input = state["input"]
+    # CAMBIO: Usamos state.get("text") porque es lo que envía el test/frontend
+    current_input = state.get("text") or state.get("input")
+
     if not history:
         history = [HumanMessage(content=current_input)]
-    else:
-        if history[-1].content != current_input:
-            history.append(HumanMessage(content=current_input))
 
-    # PROMPT DE MEMORIA SELECTIVA
     sys_msg = SystemMessage(
         content=(
-            "Eres un Arquitecto de Azure. Tienes acceso al historial para entender el contexto global, "
+            "Eres un Arquitecto de Azure. Tu objetivo es responder ÚNICAMENTE a la última pregunta "
             "Responde en UN SOLO PÁRRAFO de máximo 12 líneas."
-            "pero para esta respuesta debes priorizar EXCLUSIVAMENTE los nuevos datos de las herramientas. "
-            "Si el usuario cambia de tema (ej. de Redes a SQL), olvida lo anterior y enfócate en los nuevos documentos. "
-            "Responde en UN SOLO PÁRRAFO (máx 12 líneas) citando Archivo y Página."
+            "usando los documentos recuperados que sean RELEVANTES a ese tema específico. "
+            "Si los documentos recuperados hablan de SQL pero la pregunta es de Redes, IGNORA los de SQL. "
+            "Cita SIEMPRE el nombre del archivo que encuentres en el documents.json. "
+            "No mezcles información de temas distintos."
         )
     )
 
@@ -66,12 +65,17 @@ async def custom_tool_wrapper(state: GraphState) -> dict:
 
 
 async def finalize_node(state: GraphState) -> dict:
-    """Filtra fuentes de la interacción actual sin romper la cadena del historial."""
     history = state.get("history", [])
+    last_ai_msg = next(
+        (m for m in reversed(history) if isinstance(m, AIMessage) and not m.tool_calls),
+        None,
+    )
+    response_text = last_ai_msg.content if last_ai_msg else ""
+
     current_response_sources = []
     seen_keys = set()
 
-    # Buscamos fuentes de la ÚLTIMA búsqueda realizada en este turno
+    # Solo buscamos fuentes en el último mensaje de herramientas (el más reciente)
     for msg in reversed(history):
         if isinstance(msg, ToolMessage):
             try:
@@ -80,12 +84,11 @@ async def finalize_node(state: GraphState) -> dict:
                     if isinstance(msg.content, str)
                     else msg.content
                 )
-                docs = data if isinstance(data, list) else data.get("value", [])
+                docs = data.get("value", []) if isinstance(data, dict) else []
 
                 for doc in docs:
-                    source_name = doc.get("source") or doc.get("title") or "Documento"
-                    page = doc.get("page_number") or doc.get("page")
-
+                    source_name = doc.get("source") or doc.get("title") or ""
+                    # Limpiamos para tener solo el nombre base: Manual_Redes_v1
                     clean_name = (
                         str(source_name)
                         .split("\\")[-1]
@@ -93,41 +96,30 @@ async def finalize_node(state: GraphState) -> dict:
                         .replace(".pdf", "")
                         .replace(".docx", "")
                     )
-                    source_key = f"{clean_name}-{page}"
 
-                    if source_key not in seen_keys:
-                        seen_keys.add(source_key)
-                        current_response_sources.append(
-                            {
-                                "title": f"{clean_name}.pdf",
-                                "search_term": clean_name.lower(),
-                                "page": page,
-                                "url": doc.get("url") or "#",
-                            }
-                        )
-            except Exception as e:
-                logger.error(f"Error parseando fuentes: {e}")
+                    # VALIDACIÓN CRÍTICA: ¿El nombre del archivo está en el texto de la respuesta?
+                    # Usamos una búsqueda insensible a mayúsculas
+                    if clean_name.lower() in response_text.lower():
+                        source_key = f"{clean_name}-{doc.get('page_number')}"
+                        if source_key not in seen_keys:
+                            seen_keys.add(source_key)
+                            current_response_sources.append(
+                                {
+                                    "title": f"{clean_name}.pdf",
+                                    "page": doc.get("page_number"),
+                                    "url": doc.get("url") or "#",
+                                }
+                            )
+            except Exception:
+                continue
+
+        # Al llegar al mensaje del humano, dejamos de buscar herramientas de turnos anteriores
         if isinstance(msg, HumanMessage):
             break
 
-    # Obtenemos el último texto del asistente
-    last_ai_msg = next(
-        (m for m in reversed(history) if isinstance(m, AIMessage) and not m.tool_calls),
-        None,
-    )
-    response_text = last_ai_msg.content if last_ai_msg else ""
-
-    final_sources = [
-        s
-        for s in current_response_sources
-        if s["search_term"] in response_text.lower()
-        or f"página {s['page']}" in response_text.lower()
-    ]
-
     return {
         "response": response_text,
-        "sources": final_sources,
-        "intention": state.get("intention", "AZURE_ARCHITECT"),
+        "sources": current_response_sources,
         "history": history,
     }
 

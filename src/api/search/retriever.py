@@ -4,7 +4,7 @@ Este componente une las piezas: busca en la base de datos (Retrieve),
 prepara el contexto (Augment) y genera la respuesta final (Generate).
 """
 
-from langchain_community.vectorstores.azure_ai_search import AzureAISearch
+from langchain_community.vectorstores import AzureSearch
 from langchain_openai import AzureOpenAIEmbeddings
 
 from src.api.core.config import settings
@@ -15,14 +15,14 @@ from src.api.llm.client import llm
 embeddings = AzureOpenAIEmbeddings(
     azure_deployment="text-embedding-3-large",
     openai_api_version=settings.AZURE_OPENAI_API_VERSION,
-    azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+    azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT),
     api_key=settings.AZURE_OPENAI_API_KEY,
 )
 
 # ALMACÉN DE CONOCIMIENTO (VECTOR STORE)
 # Establecemos la conexión directa con el índice de Azure AI Search.
-vector_store = AzureAISearch(
-    azure_search_endpoint=settings.AZURE_SEARCH_ENDPOINT,
+vector_store = AzureSearch(
+    azure_search_endpoint=str(settings.AZURE_SEARCH_ENDPOINT),
     azure_search_key=settings.AZURE_SEARCH_API_KEY,
     index_name=settings.AZURE_SEARCH_INDEX_NAME,
     embedding_function=embeddings.embed_query,

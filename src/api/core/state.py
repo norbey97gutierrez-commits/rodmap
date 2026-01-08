@@ -19,7 +19,6 @@ def merge_sources(left: Optional[List[Any]], right: Optional[List[Any]]) -> List
 
     for s in combined:
         if isinstance(s, dict):
-            # Creamos un ID único combinando el nombre del archivo y la página
             s_id = f"{s.get('title', '')}-{s.get('url', '')}"
         else:
             s_id = str(s)
@@ -35,7 +34,6 @@ class GraphState(TypedDict):
     input: str
     intention: Optional[str]
     context: str
-    # Usamos merge_sources para que las fuentes se acumulen correctamente
     sources: Annotated[List[Any], merge_sources]
     response: str
     history: Annotated[Sequence[BaseMessage], add_messages]
