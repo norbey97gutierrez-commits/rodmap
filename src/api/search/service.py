@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any, Dict, List
 
@@ -40,7 +41,13 @@ class AzureAISearchService:
         """
         Realiza búsqueda híbrida (Vectorial + Texto plano).
         Retorna contexto para el LLM y datos estructurados para el Grafo.
+        
+        IMPORTANTE: Esta función siempre debe devolver un diccionario válido
+        con las claves 'content' y 'value', incluso en caso de error.
+        El ToolNode de LangGraph serializa automáticamente este diccionario a JSON.
         """
+        logger.info(f"search_technical_docs - Iniciando búsqueda para query: '{query[:100]}...'")
+        
         # Configuración del modelo de embeddings para convertir texto en vectores
         embeddings_model = AzureOpenAIEmbeddings(
             azure_deployment=settings.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
@@ -49,8 +56,14 @@ class AzureAISearchService:
         )
 
         try:
+            # Validación: verificamos que los parámetros estén configurados
+            if not self.endpoint or not self.index_name or not self.credential:
+                raise ValueError("Configuración de Azure Search incompleta. Verifica las variables de entorno.")
+            
             # Convierte la duda del usuario en un vector numérico
+            logger.info(f"search_technical_docs - Generando embeddings...")
             query_vector = await embeddings_model.aembed_query(query)
+            logger.info(f"search_technical_docs - Embeddings generados, dimensión: {len(query_vector)}")
 
             async with SearchClient(
                 self.endpoint, self.index_name, self.credential
@@ -61,6 +74,7 @@ class AzureAISearchService:
                 )
 
                 # Ejecuta búsqueda Híbrida: combina relevancia semántica y palabras clave
+                logger.info(f"search_technical_docs - Ejecutando búsqueda híbrida...")
                 results = await client.search(
                     search_text=query,
                     vector_queries=[vector_query],
@@ -71,7 +85,9 @@ class AzureAISearchService:
                 context_blocks = []  # Para alimentar al LLM
                 raw_docs = []  # Para extraer metadatos de fuentes
 
+                result_count = 0
                 async for result in results:
+                    result_count += 1
                     page = result.get("page_number")
                     page_label = str(page) if page is not None else "N/A"
 
@@ -92,15 +108,29 @@ class AzureAISearchService:
                         }
                     )
 
+                logger.info(f"search_technical_docs - Búsqueda completada, {result_count} resultados encontrados")
+
                 # Retorno clave: 'content' para el prompt, 'value' para las citas
-                return {
-                    "content": "\n\n---\n\n".join(context_blocks),
+                # El ToolNode serializa automáticamente el diccionario a JSON string
+                result_dict = {
+                    "content": "\n\n---\n\n".join(context_blocks) if context_blocks else "",
                     "value": raw_docs,
                 }
+                
+                logger.info(f"search_technical_docs - Retornando resultado: content_length={len(result_dict['content'])}, docs_count={len(result_dict['value'])}")
+                return result_dict
 
         except Exception as e:
-            logger.error(f"Error en búsqueda técnica: {e}")
-            return {"content": "", "value": []}
+            logger.error(f"search_technical_docs - Error en búsqueda técnica: {e}", exc_info=True)
+            logger.error(f"search_technical_docs - Tipo de error: {type(e).__name__}")
+            # CRÍTICO: Siempre devolvemos un diccionario válido, incluso en caso de error
+            # Esto evita que el ToolNode falle al intentar serializar el resultado
+            error_result = {
+                "content": f"Error al buscar documentos: {str(e)[:200]}",
+                "value": []
+            }
+            logger.warning(f"search_technical_docs - Retornando resultado de error")
+            return error_result
 
     async def create_or_update_index(self, index_name: str, vector_dimensions: int):
         """Define y crea la arquitectura del índice en Azure AI Search."""
