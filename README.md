@@ -29,6 +29,7 @@ AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4o-mini"
 AZURE_AI_SEARCH_SERVICE_NAME="tu_servicio"
 AZURE_AI_SEARCH_INDEX_NAME="tu_indice"
 AZURE_AI_SEARCH_API_KEY="tu_api_key"
+DATABASE_URL="postgresql://rodmap:rodmap@localhost:5432/rodmap"
 ```
 
 ### 3. Instalación de Dependencias
@@ -42,6 +43,14 @@ pip install -r requirements.txt
 ```sh
      uvicorn src.main:app --reload
 ```
+
+### 5. Docker (PostgreSQL + API)
+
+```sh
+docker compose up --build
+```
+
+La API queda disponible en `http://127.0.0.1:8000` y Postgres en `localhost:5432`.
 
 Acceda a la documentación interactiva Swagger en:<http://127.0.0.1:8000/docs>
 

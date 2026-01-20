@@ -60,6 +60,7 @@ dependencies = [
     "ormsgpack==1.12.1",
     "packaging==23.2",
     "propcache==0.4.1",
+    "psycopg[binary]",
     "pycparser==2.23",
     "pydantic==2.12.5",
     "pydantic-core==2.41.5",

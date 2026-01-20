@@ -7,11 +7,11 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.adapters.local.sqlite_repo import SqliteRepo
+from src.adapters.local.postgres_repo import PostgresRepo
 from src.infrastructure.azure_setup import settings
 from src.routes import router
 
-SqliteRepo()
+PostgresRepo()
 
 app = FastAPI(
     title="Azure AI Architect Backend",

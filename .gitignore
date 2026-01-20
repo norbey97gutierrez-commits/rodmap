@@ -97,6 +97,7 @@ cubrir/
 configuración_local.py
 db.sqlite3
 diario db.sqlite3
+data/dev_history.db
 
 # Cosas del matraz:
 instancia/
