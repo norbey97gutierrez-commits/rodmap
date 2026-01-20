@@ -6,16 +6,17 @@ Este proyecto representa un Ingeniero de IA en Azure. Es un sistema de asistenci
 
 El backend está diseñado siguiendo una evolución natural de capacidades de IA, desde la inferencia mínima hasta la orquestación compleja de agentes:
 
-* **API Layer**: FastAPI local para exposición de endpoints HTTP.
+* **API Layer**: FastAPI para exposición de endpoints HTTP.
 * **Orquestación**: LangGraph para la gestión de flujos, estados y control de ciclos.
-* **Razonamiento**: Azure OpenAI con **Structured Output** para clasificación de intenciones mediante Pydantic.
-* **Conocimiento**: Azure AI Search para la indexación y búsqueda semántica de documentos técnicos.
+* **Razonamiento**: Azure OpenAI con **Structured Output** para clasificación de intenciones.
+* **Conocimiento**: Azure AI Search para indexación y búsqueda semántica.
+* **Persistencia**: PostgreSQL para usuarios y `kv_store`.
 
 ## 🚀 Configuración e Instalación
 
 ### 1. Requisitos Previos
 
-* Python 3.10+
+* Python 3.12+
 * Cuenta de Azure con recursos de **Azure OpenAI** y **Azure AI Search**.
 
 ### 2. Variables de Entorno (`.env`)
@@ -29,19 +30,22 @@ AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4o-mini"
 AZURE_AI_SEARCH_SERVICE_NAME="tu_servicio"
 AZURE_AI_SEARCH_INDEX_NAME="tu_indice"
 AZURE_AI_SEARCH_API_KEY="tu_api_key"
-DATABASE_URL="postgresql://rodmap:rodmap@localhost:5432/rodmap"
+FRONTEND_URL="http://localhost:5173"
+DATABASE_URL="tu configuracion"
 ```
 
-### 3. Instalación de Dependencias
+En Docker, `DATABASE_URL` se define automáticamente en `docker-compose.yml`.
+
+### 3. Instalación de Dependencias (uv recomendado)
 
 ```sh
-pip install -r requirements.txt
+uv sync
 ```
 
 ### 4. Ejecución del Servidor
 
 ```sh
-     uvicorn src.main:app --reload
+uv run uvicorn src.main:app --reload
 ```
 
 ### 5. Docker (PostgreSQL + API)
@@ -51,6 +55,7 @@ docker compose up --build
 ```
 
 La API queda disponible en `http://127.0.0.1:8000` y Postgres en `localhost:5432`.
+El frontend (React+Vite) se sirve en `http://localhost:5173/chat`.
 
 Acceda a la documentación interactiva Swagger en:<http://127.0.0.1:8000/docs>
 
@@ -68,13 +73,12 @@ La arquitectura propuesta es:
     RODMAP/
     ├── data/               # Archivos JSON locales para indexación
     ├── src/
-    │   ├── api/
-    │   │   ├── core/       # Configuración (.env), estados y modelos Pydantic
-    │   │   ├── llm/        # Clientes de Azure OpenAI y lógica del Clasificador
-    │   │   ├── search/     # Utilidades para búsqueda en Azure AI Search
-    │   │   ├── graph.py    # Definición del flujo de LangGraph (Nodos y Edges)
-    │   │   └── routes.py   # Endpoints de FastAPI (POST /query)
-    │   ├── tools/          # Herramientas del agente (indexer.py)
-    │   └── main.py         # Punto de entrada de la aplicación FastAPI
+    │   ├── adapters/       # Adaptadores (Azure, local, parsers)
+    │   ├── application/    # Orquestación LangGraph y estado
+    │   ├── domain/         # Entidades y puertos
+    │   ├── infrastructure/ # Configuración y seguridad
+    │   ├── routes/         # Endpoints FastAPI
+    │   └── main.py         # Punto de entrada de la aplicación
     ├── .env                # Variables de entorno (Azure Keys & Endpoints)
-    └── requirements.txt    # Dependencias del proyecto
+    ├── docker-compose.yml  # API + PostgreSQL
+    └── pyproject.toml      # Dependencias del proyecto (uv)

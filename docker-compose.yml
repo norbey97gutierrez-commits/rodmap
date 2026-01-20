@@ -2,9 +2,9 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_DB: rodmap
-      POSTGRES_USER: rodmap
-      POSTGRES_PASSWORD: rodmap
+      POSTGRES_DB: azure_arquitect
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "1997"
     ports:
       - "5432:5432"
     volumes:
@@ -13,13 +13,24 @@ services:
   api:
     build: .
     environment:
-      DATABASE_URL: postgresql://rodmap:rodmap@db:5432/rodmap
+      DATABASE_URL: postgresql://postgres:1997@db:5432/azure_arquitect
+      FRONTEND_URL: http://localhost:5173
     env_file:
       - .env
     ports:
       - "8000:8000"
     depends_on:
       - db
+
+  frontend:
+    build:
+      context: ../../frontend_roadmap
+    environment:
+      VITE_API_BASE: http://localhost:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
 
 volumes:
   postgres_data:
